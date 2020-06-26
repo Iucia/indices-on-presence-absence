@@ -1,0 +1,631 @@
+---
+title: "Podani_NAOAO_metaBGT"
+subtitle: ""
+author: "Lucia Campese"
+date: "June 2020"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<style>
+.column-left{
+  float: left;
+  width: 50%;
+  text-align: left;
+}
+.column-right{
+  float: right;
+  width: 50%;
+  text-align: right;
+}
+</style>
+
+
+<br>
+
+### Aim 
+
+The aim is to apply the simplex approach proposed by in Podani et al. (2011, 2018) to our presence/absence data.
+
+The simplex is built using three coefficients:
+
+1. Jaccard coefficient of similarity, i.e. shared species (SJac = $\frac{a}{n}$)
+2. Relativized richness difference (Drel = $\frac{|b - c|}{n}$)
+3. Relativized species replacement (Rrel = $\frac{2min(b,c)}{n}$)
+
+where **a** is the number of species present in both sites being compared, **b** is the number of species present only in the first one and **c** is the number of species present only in the second site, so that a + b + c = n.
+
+The three coefficients are calculated for all the possible pairs of sites in a presence/absence data matrix, providing a diagram that depicts data structure in terms of similarity, relativized richness difference and relativized species replacement, each corresponding to a corner of the triangle.
+
+This traingle plot is referred to as the SDR-simplex, as it is the simultaneous display of relationships as revealed by measures SJac, Drel and Rrel.
+
+How to read the plot:
+In general, the proximity of a point to the vertices is proportional to the respective coefficient values.
+
+
+![SDR simplex](C:/Users/Userszn/Documents/PhD/script/NAO_AO_transition/Podani2011Fig2.png){width=100% height=400}
+
+
+<br>
+
+<br>
+
+## Part One: Global scale
+
+<br>
+
+### Dataset
+##### Omic data: metaB, metaG, metaT 
+##### Taxon: Diatoms
+##### Depth: Surface
+##### Size fraction: 20-180 um
+##### Geographic scale: Global  
+
+<br>
+
+<br>
+
+##### metaB
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+library(tidyverse)
+library(vegan)
+library(ggtern)
+library(data.table)
+
+thsh <- 9
+
+load("C:/Users/Userszn/Documents/PhD/TARA_Data/metaB/diatoms/metab_diatoms_20171106.RData")
+dat_samp <- read.delim("~/PhD/TARA_Data/dat_samp.txt")
+
+
+#filter datsamp
+dat_samp_20180_SRF <- dat_samp %>% 
+  mutate(Station.label = substr(Station.label, 6, 8),
+         Station.label = as.numeric(Station.label)) %>% 
+  filter(Depth == "SRF",
+         Fraction.size == "20-180")
+
+
+#take reads only in the stations, depths and fractions of interest
+metab_20180_SRF <- metab_diatoms_20171106 %>% 
+  pivot_longer(BV9_1:TV9_99) %>% 
+  rename(Sample.id = name) %>% 
+  inner_join(dat_samp_20180_SRF, by="Sample.id") %>% 
+  select(cid, Station.label, value) %>% 
+  mutate(value = ifelse(value > 0, 1, 0)) %>% 
+  filter(value !=0) %>% 
+  add_count(cid, name = "Occurrences") %>% 
+  rename("Type/OTU" = cid, Station = Station.label) %>%
+  filter(Occurrences > thsh)
+
+tara_pabs <- metab_20180_SRF %>%
+  select(`Type/OTU`, Station)
+
+comn <- tara_pabs %>%
+  group_by(Station) %>%
+  summarise(data = list(`Type/OTU`))
+
+pairnames <- expand_grid(S1 = as.character(comn$Station), S2 = as.character(comn$Station))
+data      <- expand_grid(D1 = comn$data, D2 = comn$data)
+
+temp_vector <- dat_samp_20180_SRF %>%
+  rename(Station = Station.label) %>% 
+  select(Station, Temperature) %>%
+  distinct %>%
+  arrange(Station) %>%
+  group_by(Station) %>%
+  summarise(Temperature = mean(Temperature)) %>%
+  column_to_rownames("Station")
+
+rapa_metab_all <- bind_cols(pairnames, data) %>%
+  mutate(int = map2(D1, D2, ~intersect(.x, .y)),
+         a = map_int(int, ~length(.x)),
+         b = map2_int(D1, int, ~length(setdiff(.x, .y))),
+         c = map2_int(D2, int, ~length(setdiff(.x, .y))), n = a + b + c) %>%
+  mutate(Sjac = a / n,
+         Drel = abs(b - c) / n,
+         Rrel = 2 * pmin(b, c) / n) %>%
+  mutate(T1 = temp_vector[S1, ]) %>%
+  mutate(T2 = temp_vector[S2, ]) %>%
+  mutate(`Delta temperature` = abs(T1 - T2)) %>%
+  mutate(Richness = map_int(D1, ~length(.x)))
+```
+
+<div class="column-left">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metab_all, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 0.8, alpha = 0.25, aes(col = `Delta temperature`)) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaB",
+       subtitle = paste("Considering OTUs appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div><div class="column-right">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+Polar <- as.character(c(84:89, 158:210))
+Non_Polar <- as.character(c(7:83, 90:155))
+
+rapa_metab_all2 <- rapa_metab_all %>% 
+  mutate(`Marine Biome` = case_when(S1 %in% Polar & S2 %in% Polar ~ "Polar",
+                                    (S1 %in% Polar & S2 %in% Non_Polar) |
+                                      (S1 %in% Non_Polar & S2 %in% Polar) ~ "Polar - Non Polar",
+                                    S1 %in% Non_Polar & S2 %in% Non_Polar  ~ "Non Polar"))
+
+
+ggtern(data = rapa_metab_all2, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 0.8, alpha = 0.25, aes(col = `Marine Biome`)) +
+  guides(colour = guide_legend(override.aes = list(size=3))) +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaB",
+       subtitle = paste("Considering OTUs appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div>
+
+<br>
+
+##### metaG
+```{r eval=FALSE}
+#FALKOR
+
+#/home/lcampese/Data/new_taxonomy/metaG
+#ls *.metaG.diatoms | while read line; do sed -e '1d' -e 's/$/ '$line'/g' "$line" >> metaG_diatoms_all_presabs.ssv; done
+#lcampese@falkor-frontend:~/Data/new_taxonomy/metaG$ sed 's/ \([0-9]\{,3\}\)SUR[01234]QQSS1[12345].metaG.diatoms/\t\1/g' metaG_diatoms_all_presabs.ssv > metaG_diatoms_all_presabs_v2.ssv
+#lcampese@falkor-frontend:~/Data/new_taxonomy/metaG$
+
+
+#metaG <- fread("metaG_diatoms_all_presabs_v2.ssv") %>%
+#  separate(V2, into = c("value", "Station"), sep = "\\s") %>% 
+#  rename(geneid = V1) %>% 
+#  select(geneid, Station)
+
+library(tidyverse)
+library(vegan)
+library(ggtern)
+library(data.table)
+
+thsh <- 9
+
+tara_pabs <- metaG %>% 
+  add_count(geneid, name = "Occurrences") %>% 
+  filter(Occurrences > thsh) %>% 
+  select(geneid, Station)
+
+comn <- tara_pabs %>%
+  group_by(Station) %>%
+  summarise(data = list(geneid))
+
+pairnames <- expand.grid(S1 = as.character(comn$Station), S2 = as.character(comn$Station))
+data      <- expand.grid(D1 = comn$data, D2 = comn$data)
+
+
+rapa <- bind_cols(pairnames, data) %>%
+  mutate(int = map2(D1, D2, ~intersect(.x, .y)),
+         a = map_int(int, ~length(.x)),                                                                
+         b = map2_int(D1, int, ~length(setdiff(.x, .y))),
+         c = map2_int(D2, int, ~length(setdiff(.x, .y))), n = a + b + c) %>%
+  mutate(Sjac = a / n,
+         Drel = abs(b - c) / n,
+         Rrel = 2 * pmin(b, c) / n) %>%
+  #mutate(T1 = temp_vector[S1, ]) %>%
+  #mutate(T2 = temp_vector[S2, ]) %>%
+  #mutate(`Delta temperature` = abs(T1 - T2)) %>%
+  mutate(Richness = map_int(D1, ~length(.x)))
+```
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+#local
+load("~/PhD/script/Podani/rapa_metag.RData")
+
+Polar <- as.character(c(84:89, 158:210))
+Non_Polar <- as.character(c(7:83, 90:155))
+
+rapa_metag_all <- rapa_metag %>%
+  mutate(T1 = temp_vector[S1, ]) %>%
+  mutate(T2 = temp_vector[S2, ]) %>%
+  mutate(`Delta temperature` = abs(T1 - T2)) %>%
+  mutate(`Marine Biome` = case_when(S1 %in% Polar & S2 %in% Polar ~ "Polar",
+                                    (S1 %in% Polar & S2 %in% Non_Polar |
+                                       S1 %in% Non_Polar & S2 %in% Polar) ~ "Polar-Non Polar",
+                                    S1 %in% Non_Polar & S2 %in% Non_Polar  ~ "Non Polar"))
+```
+
+<div class="column-left">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metag_all, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 0.8, alpha = 0.25, aes(col = `Delta temperature`)) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaG",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div><div class="column-right">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metag_all, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 0.8, alpha = 0.25, aes(col = `Marine Biome`)) +
+  guides(colour = guide_legend(override.aes = list(size=3))) +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaG",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div>
+
+<br>
+
+##### metaT
+```{r eval=FALSE}
+#Falkor
+
+#/home/lcampese/Data/new_taxonomy/metaT
+# *.metaT.diatoms | while read line; do sed -e '1d' -e 's/$/ '$line'/g' "$line" >> metaT_diatoms_all_presabs.ssv; done
+# 's/ \([0-9]\{,3\}\)SUR[01234]QQSS1[12345].metaT.diatoms/\t\1/g' metaT_diatoms_all_presabs.ssv > metaT_diatoms_all_presabs_v2.ssv
+#lcampese@falkor-frontend:~/Data/new_taxonomy/metaT$
+
+metaT <- fread("metaT_diatoms_all_presabs_v2.ssv") %>%
+  separate(V2, into = c("value", "Station"), sep = "\\s") %>% 
+  rename(geneid = V1) %>% 
+  select(geneid, Station)
+
+
+library(tidyverse)
+library(vegan)
+library(ggtern)
+library(data.table)
+
+thsh <- 9
+
+tara_pabs <- metaT %>% 
+  add_count(geneid, name = "Occurrences") %>% 
+  filter(Occurrences > thsh) %>% 
+  select(geneid, Station)
+
+comn <- tara_pabs %>%
+  group_by(Station) %>%
+  summarise(data = list(geneid))
+
+pairnames <- expand.grid(S1 = as.character(comn$Station), S2 = as.character(comn$Station))
+data      <- expand.grid(D1 = comn$data, D2 = comn$data)
+
+
+rapa_metat <- bind_cols(pairnames, data) %>%
+  mutate(int = map2(D1, D2, ~intersect(.x, .y)),
+         a = map_int(int, ~length(.x)),                                                                
+         b = map2_int(D1, int, ~length(setdiff(.x, .y))),
+         c = map2_int(D2, int, ~length(setdiff(.x, .y))), n = a + b + c) %>%
+  mutate(Sjac = a / n,
+         Drel = abs(b - c) / n,
+         Rrel = 2 * pmin(b, c) / n) %>%
+  #mutate(T1 = temp_vector[S1, ]) %>%
+  #mutate(T2 = temp_vector[S2, ]) %>%
+  #mutate(`Delta temperature` = abs(T1 - T2)) %>%
+  mutate(Richness = map_int(D1, ~length(.x)))
+```
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+#local
+load("~/PhD/script/Podani/rapa_metat.RData")
+
+Polar <- as.character(c(84:89, 158:210))
+Non_Polar <- as.character(c(7:83, 90:155))
+
+rapa_metat_all <- rapa_metat %>%
+  mutate(T1 = temp_vector[S1, ]) %>%
+  mutate(T2 = temp_vector[S2, ]) %>%
+  mutate(`Delta temperature` = abs(T1 - T2)) %>%
+  mutate(`Marine Biome` = case_when(S1 %in% Polar & S2 %in% Polar ~ "Polar",
+                                    (S1 %in% Polar & S2 %in% Non_Polar |
+                                       S1 %in% Non_Polar & S2 %in% Polar) ~ "Polar-Non Polar",
+                                    S1 %in% Non_Polar & S2 %in% Non_Polar  ~ "Non Polar"))
+```
+
+<div class="column-left">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metat_all, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 0.8, alpha = 0.25, aes(col = `Delta temperature`)) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaT",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))  
+```
+
+</div><div class="column-right">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metat_all, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 0.8, alpha = 0.25, aes(col = `Marine Biome`)) +
+  guides(colour = guide_legend(override.aes = list(size=3))) +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaT",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div>
+
+
+<br>
+
+<br>
+
+## Part Two: Zoom in the Transition from Atlantic to Arctic Ocean
+
+<br>
+
+### Dataset
+##### Omic data: metaB, metaG, metaT 
+##### Taxon: Diatoms
+##### Depth: Surface
+##### Size fraction: 20-180 um
+##### Geographic scale: North Atlantic Ocean, Arctic Ocean   
+
+
+<br>
+
+<br>
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+library(tidyverse)
+library(ggplot2)
+library(maps)
+library(ggrepel)
+
+#upload maps
+world_map <- map_data("world")
+p <- ggplot() + coord_fixed() 
+base_world3 <- p + geom_polygon(data=world_map,aes(x=long, y=lat,group=group),colour="gray80",size=0.2, fill="gray80")+
+  theme_bw() + coord_fixed()
+
+NAO <- as.character(c(141:152))
+Transition <- as.character(c(155,158,163,168,178))
+AO <- as.character(c(173,175,178:210))   
+
+NAOAO_points <- dat_samp %>% 
+  mutate(Station.label = substr(Station.label, 6, 8)) %>% 
+  filter(Station.label %in% c(NAO, Transition, AO)) %>% 
+  group_by(Station.label) %>% 
+  summarise(Latitude = mean(Latitude), Longitude = mean(Longitude)) %>% 
+  ungroup() %>% 
+  mutate(`Ocean Region` = case_when(Station.label %in% NAO ~ "NAO",
+                                    Station.label %in% Transition ~ "Transition",
+                                    Station.label %in% AO ~ "AO"))
+
+#Define the x axes required
+x_lines <- seq(-120,180, by = 60)
+
+ggplot() +
+  geom_polygon(data = world_map, aes(x = long, y = lat, group = group), fill = "lightslategrey", colour = "black", alpha = 0.8)+
+  #Convert to polar coordinates
+  coord_map("ortho", orientation = c(90, 0, 0)) +
+  scale_y_continuous(breaks = seq(50, 90, by = 10), labels = NULL) +
+  scale_x_continuous(breaks = NULL) +
+  xlab("") +
+  ylab("") +
+  geom_segment(aes(y = 45, yend = 90, x = x_lines, xend = x_lines), linetype = "dashed") +
+  geom_point(data=NAOAO_points, aes(x=Longitude,y=Latitude, fill = `Ocean Region`),color="black",shape=21,cex=2) +
+  geom_label_repel(data=NAOAO_points, aes(x=Longitude,y=Latitude, col= `Ocean Region`),
+                   label=NAOAO_points$Station.label,
+                   fontface=2, size = 3) +
+   theme(panel.background = element_blank(),
+        panel.grid.major = element_line(size = 0.25, linetype = 'dashed',
+                                        colour = "black"),
+        axis.ticks=element_blank())
+```
+
+
+
+##### metaB
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+library(tidyverse)
+library(vegan)
+library(ggtern)
+library(data.table)
+
+thsh <- 9
+
+load("C:/Users/Userszn/Documents/PhD/TARA_Data/metaB/diatoms/metab_diatoms_20171106.RData")
+dat_samp <- read.delim("~/PhD/TARA_Data/dat_samp.txt")
+
+
+#filter datsamp
+NAOAO_20180_SRF <- dat_samp %>% 
+  mutate(Station.label = substr(Station.label, 6, 8),
+         Station.label = as.numeric(Station.label)) %>% 
+  filter(Station.label %in% c(141:210),
+         Depth == "SRF",
+         Fraction.size == "20-180")
+
+
+#take reads only in the stations, depths and fractions of interest
+metab_NAOAO_SRF <- metab_diatoms_20171106 %>% 
+  pivot_longer(BV9_1:TV9_99) %>% 
+  rename(Sample.id = name) %>% 
+  inner_join(NAOAO_20180_SRF, by="Sample.id") %>% 
+  select(cid, Station.label, value) %>% 
+  mutate(value = ifelse(value > 0, 1, 0)) %>% 
+  filter(value !=0) %>% 
+  add_count(cid, name = "Occurrences") %>% 
+  rename("Type/OTU" = cid, Station = Station.label) %>%
+  filter(Occurrences > thsh) 
+
+tara_pabs <- metab_NAOAO_SRF %>%
+  select(`Type/OTU`, Station)
+
+comn <- tara_pabs %>%
+  group_by(Station) %>%
+  summarise(data = list(`Type/OTU`))
+
+pairnames <- expand_grid(S1 = as.character(comn$Station), S2 = as.character(comn$Station))
+data      <- expand_grid(D1 = comn$data, D2 = comn$data)
+
+
+temp_vector <- NAOAO_20180_SRF %>%
+  rename(Station = Station.label) %>%
+  select(Station, Temperature) %>%
+  distinct %>%
+  arrange(Station) %>%
+  group_by(Station) %>%
+  summarise(Temperature = mean(Temperature)) %>%
+  column_to_rownames("Station")
+
+
+###
+
+rapa_metaB_NAOAO <- bind_cols(pairnames, data) %>%
+  mutate(int = map2(D1, D2, ~intersect(.x, .y)),
+         a = map_int(int, ~length(.x)),
+         b = map2_int(D1, int, ~length(setdiff(.x, .y))),
+         c = map2_int(D2, int, ~length(setdiff(.x, .y))), n = a + b + c) %>%
+  mutate(Sjac = a / n,
+         Drel = abs(b - c) / n,
+         Rrel = 2 * pmin(b, c) / n) %>%
+  mutate(T1 = temp_vector[S1,]) %>%
+  mutate(T2 = temp_vector[S2,]) %>%
+  mutate(`Delta temperature` = abs(T1 - T2)) %>%
+  mutate(Richness = map_int(D1, ~length(.x)))
+```
+
+<div class="column-left">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+
+ggtern(data = rapa_metaB_NAOAO, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 1, alpha = 0.25, aes(col = `Delta temperature`)) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaB",
+       subtitle = paste("Considering OTUs appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div><div class="column-right">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+NAO <- as.character(c(141:152))
+Transition <- as.character(c(155,158,163,168,178))
+AO <- as.character(c(173,175,178:210))       
+
+rapa_metaB_NAOAO2 <- rapa_metaB_NAOAO %>% 
+  mutate(`Ocean Region` = case_when(S1 %in% NAO & S2 %in% NAO ~ "NAO-NAO",
+                                    S1 %in% Transition & S2 %in% Transition ~ "Transition-Transition",
+                                    S1 %in% AO & S2 %in% AO  ~ "AO-AO",
+                                    (S1 %in% NAO & S2 %in% AO) | (S1 %in% AO & S2 %in% NAO) ~ "NAO-AO",
+                                    (S1 %in% NAO & S2 %in% Transition) | (S1 %in% Transition & S2 %in% NAO) ~ "NAO-Transition",
+                                    (S1 %in% Transition & S2 %in% AO) | (S1 %in% AO & S2 %in% Transition) ~ "Transition-AO"))
+
+
+ggtern(data = rapa_metaB_NAOAO2, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 1, alpha = 0.25, aes(col = `Ocean Region`)) +
+  guides(colour = guide_legend(override.aes = list(size=3))) +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaB",
+       subtitle = paste("Considering OTUs appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div>
+
+
+<br>
+
+##### metaG
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+###NAOAO
+NAO <- as.character(c(141:152))
+Transition <- as.character(c(155,158,163,168,178))
+AO <- as.character(c(173,175,178:210))   
+
+rapa_metag_NAOAO <- rapa_metag_all %>% 
+  filter(S1 %in% c(NAO, Transition, AO),
+         S2 %in% c(NAO, Transition, AO))
+
+    
+rapa_metag_NAOAO2 <- rapa_metag_NAOAO %>% 
+  mutate(`Ocean Region` = case_when(S1 %in% NAO & S2 %in% NAO ~ "NAO-NAO",
+                                    S1 %in% Transition & S2 %in% Transition ~ "Transition-Transition",
+                                    S1 %in% AO & S2 %in% AO  ~ "AO-AO",
+                                    (S1 %in% NAO & S2 %in% AO) | (S1 %in% AO & S2 %in% NAO) ~ "NAO-AO",
+                                    (S1 %in% NAO & S2 %in% Transition) | (S1 %in% Transition & S2 %in% NAO) ~ "NAO-Transition",
+                                    (S1 %in% Transition & S2 %in% AO) | (S1 %in% AO & S2 %in% Transition) ~ "Transition-AO"))
+```
+
+<div class="column-left">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metag_NAOAO2, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 1, alpha = 0.25, aes(col = `Delta temperature`)) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaG",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div><div class="column-right">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metag_NAOAO2, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 1, alpha = 0.25, aes(col = `Ocean Region`)) +
+  guides(colour = guide_legend(override.aes = list(size=3))) +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaG",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div>
+
+
+<br>
+
+##### metaT
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+###NAOAO
+NAO <- as.character(c(141:152))
+Transition <- as.character(c(155,158,163,168,178))
+AO <- as.character(c(173,175,178:210))   
+
+rapa_metat_NAOAO <- rapa_metat_all %>% 
+  filter(S1 %in% c(NAO, Transition, AO),
+         S2 %in% c(NAO, Transition, AO))
+
+    
+rapa_metat_NAOAO2 <- rapa_metat_NAOAO %>% 
+  mutate(`Ocean Region` = case_when(S1 %in% NAO & S2 %in% NAO ~ "NAO-NAO",
+                                    S1 %in% Transition & S2 %in% Transition ~ "Transition-Transition",
+                                    S1 %in% AO & S2 %in% AO  ~ "AO-AO",
+                                    (S1 %in% NAO & S2 %in% AO) | (S1 %in% AO & S2 %in% NAO) ~ "NAO-AO",
+                                    (S1 %in% NAO & S2 %in% Transition) | (S1 %in% Transition & S2 %in% NAO) ~ "NAO-Transition",
+                                    (S1 %in% Transition & S2 %in% AO) | (S1 %in% AO & S2 %in% Transition) ~ "Transition-AO"))
+```
+
+<div class="column-left">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metat_NAOAO2, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 1, alpha = 0.25, aes(col = `Delta temperature`)) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaT",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div><div class="column-right">
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+ggtern(data = rapa_metat_NAOAO2, aes(Drel, Rrel, Sjac)) +
+  geom_point(size = 1, alpha = 0.25, aes(col = `Ocean Region`)) +
+  guides(colour = guide_legend(override.aes = list(size=3))) +
+  theme_minimal() +
+  labs(title = "Presence-absence data patterns in metaT",
+       subtitle = paste("Considering unigenes appearing at least in",
+                        thsh + 1,
+                        "stations"))
+```
+</div>
